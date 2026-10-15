@@ -30,6 +30,21 @@ service cloud.firestore {
     function escolhasValidas() {
       return request.resource.data.escolhas is map && request.resource.data.escolhas.size() <= 12;
     }
+    // Coordenador: vê quem registou boletim e a que horas, mas não os palpites nem os emails.
+    function isCoord() {
+      return signedIn() && exists(/databases/$(database)/documents/coordenadores/$(me())) && !bloqueado();
+    }
+    // Um registo é a cópia de um boletim sem as escolhas, e tem de bater certo com o boletim.
+    function espelhoDoBoletim(pid) {
+      let p = getAfter(/databases/$(database)/documents/palpites/$(pid)).data;
+      return (p.uid == me() || isAdmin())
+        && request.resource.data.keys().hasOnly(['uid', 'jornada', 'n', 'criadoEm', 'atualizadoEm'])
+        && request.resource.data.uid == p.uid
+        && request.resource.data.jornada == p.jornada
+        && request.resource.data.n == p.get('n', 1)
+        && request.resource.data.criadoEm == p.get('criadoEm', p.atualizadoEm)
+        && request.resource.data.atualizadoEm == p.atualizadoEm;
+    }
 
     // O primeiro a reclamar fica administrador. Para mudar, apaga-se o documento na consola do Firebase.
     match /config/admin {
@@ -83,8 +98,21 @@ service cloud.firestore {
     }
 
     match /bloqueados/{uid} {
-      allow read: if signedIn() && (uid == me() || isAdmin());
+      allow read: if signedIn() && (uid == me() || isAdmin() || isCoord());
       allow write: if isAdmin();
+    }
+
+    match /coordenadores/{uid} {
+      allow read: if signedIn();
+      allow write: if isAdmin() && request.resource.data.keys().hasOnly(['em']);
+      allow delete: if isAdmin();
+    }
+
+    match /registos/{pid} {
+      allow read: if signedIn() && (resource.data.uid == me() || isAdmin() || isCoord());
+      allow create, update: if signedIn() && espelhoDoBoletim(pid);
+      allow delete: if signedIn() && (isAdmin()
+        || (resource.data.uid == me() && !existsAfter(/databases/$(database)/documents/palpites/$(pid))));
     }
 
     match /jornadas/{jid} {

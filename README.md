@@ -14,6 +14,7 @@ O totoloto semanal do Realense FC. Todas as semanas cada jogador marca 1, X ou 2
 - **Palpites dos outros:** ficam escondidos até saírem os resultados e depois toda a gente os vê.
 - **Classificação:** há duas tabelas. "Mais vencedores" conta as jornadas ganhas (no máximo uma por pessoa em cada jornada) e "Mais certeiros" conta o total de jogos acertados, usando o melhor boletim de cada pessoa em cada jornada.
 - **Contas:** entra-se com email e palavra-passe e cada pessoa escolhe um nome público, que não pode estar repetido.
+- **Coordenador:** o admin pode tornar qualquer jogador coordenador em **Admin > Jogadores**. O coordenador continua a jogar e ganha o separador **Coordenação**, onde vê, jornada a jornada, quem já registou boletim, a que horas, e quem ainda falta. Não vê os palpites antes dos resultados nem os emails, e não pode mudar nada.
 - **Admin:** vê os emails e os boletins de toda a gente, cria e edita jornadas, lança resultados, bloqueia jogadores e apaga contas.
 
 O calendário das 30 jornadas já vem carregado (fonte: resultados.fpf.pt). Os horários das jornadas mais à frente podem mudar, por isso convém confirmá-los no site da FPF antes de cada jornada.

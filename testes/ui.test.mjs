@@ -128,6 +128,29 @@ await l3.nth(5).getByRole("button", { name: "1", exact: true }).click();
 await rui.getByRole("button", { name: "Registar alterações" }).click();
 await rui.getByRole("button", { name: "Registado" }).waitFor();
 passo("rui alterou um boletim antigo");
+// Mais dois jogadores: o Tiago tem um boletim antigo sem registo (o admin acerta-o) e o Nuno não joga
+const tiago = await novo("tiago"); await p_wait(tiago); await criarConta(tiago, "Tiago", "tiago@teste.pt");
+const nuno = await novo("nuno"); await p_wait(nuno); await criarConta(nuno, "Nuno", "nuno@teste.pt");
+let tiagoUid;
+for (let i = 0; i < 20 && !tiagoUid; i++) {
+  const pf = await (await fetch(`${BASE_FS}/perfis`, { headers: H })).json();
+  tiagoUid = pf.documents?.find(d => d.fields.nome.stringValue === "Tiago")?.name.split("/").pop();
+  if (!tiagoUid) await tiago.waitForTimeout(250);
+}
+await fetch(`${BASE_FS}/palpites?documentId=J02_${tiagoUid}`, { method: "POST", headers: H, body: JSON.stringify({ fields: {
+  uid: sv(tiagoUid), jornada: sv("J02"), atualizadoEm: { timestampValue: new Date().toISOString() },
+  escolhas: { mapValue: { fields: { g1: sv("X"), g2: sv("X"), g3: sv("X"), g4: sv("X"), g5: sv("X"), g6: sv("X") } } } } }) });
+// O papi torna o Bruno coordenador
+await papi.locator(".quem button", { hasText: "Admin" }).click();
+await papi.locator(".jogador-adm", { hasText: "Bruno" }).getByRole("button", { name: "Tornar coordenador" }).click();
+await papi.locator(".jogador-adm", { hasText: "Bruno" }).getByText("Coordenador", { exact: true }).waitFor();
+passo("bruno é coordenador");
+await bruno.locator(".quem button", { hasText: "Coordenação" }).click();
+await bruno.getByText("Já registaram (4)").waitFor({ timeout: 15000 });
+console.log("  coordenador vê:", (await bruno.locator("main").innerText()).replace(/\n+/g, " | "));
+await shot(bruno, "12-coordenacao");
+console.log("  nuno vê o link de coordenação:", await nuno.locator(".quem button", { hasText: "Coordenação" }).count());
+await papi.getByRole("tab", { name: "Boletim" }).click();
 // nome repetido
 const dup = await novo("dup"); await p_wait(dup);
 await dup.getByRole("button", { name: "Criar conta" }).click();

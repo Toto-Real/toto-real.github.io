@@ -88,36 +88,74 @@ const S = {
   modo: "entrar", f: {}, erroEntrar: "", okEntrar: "", erroNome: "", aEntrar: false,
   abertos: new Set(),
   todosPalpites: [], privados: {}, bloqueados: {}, edit: null, confirmar: null, importDe: null, ocupado: false,
-  pendente: false
+  pendente: false, coords: new Set(), meusReg: new Set(), registos: [], todosReg: [], coordJ: null
 };
 try { const t = localStorage.getItem("totoreal-tab"); if (t) S.tab = t; } catch {}
 
-let unsubs = [], unsubsAdmin = [];
+let unsubs = [], unsubsAdmin = [], unsubsCoord = [];
 const souAdmin = () => !!S.user && S.adminUid === S.user.uid;
+const souCoord = () => !!S.user && S.coords.has(S.user.uid) && S.bloqueio === null;
 const nomeDe = uid => S.perfis[uid]?.nome || "";
 const resMap = () => Object.fromEntries(S.resultados.map(r => [r.id, r]));
 
-function pararAdmin() { unsubsAdmin.forEach(u => u()); unsubsAdmin = []; }
+function pararAdmin() { unsubsAdmin.forEach(u => u()); unsubsAdmin = []; S.palProntos = S.regProntos = false; }
+
+// Os registos (boletins sem as escolhas) são o que o coordenador vê. A app escreve-os com cada boletim;
+// o admin acerta os que faltarem (por exemplo os boletins feitos antes de haver registos).
+let syncT;
+function agendarSync() { clearTimeout(syncT); syncT = setTimeout(sincronizarRegistos, 1500); }
+const igualTS = (a, b) => !!a && !!b && typeof a.isEqual === "function" && a.isEqual(b);
+async function sincronizarRegistos() {
+  if (!souAdmin() || !S.palProntos || !S.regProntos) return;
+  const regs = new Map(S.todosReg.map(r => [r.id, r]));
+  const ops = [];
+  for (const p of S.todosPalpites) {
+    if (p._pend || !p.atualizadoEm) continue;
+    const r = regs.get(p.id), cri = p.criadoEm || p.atualizadoEm;
+    if (!r || !igualTS(r.atualizadoEm, p.atualizadoEm) || !igualTS(r.criadoEm, cri) || (r.n ?? 1) !== (p.n ?? 1))
+      ops.push(setDoc(doc(db, "registos", p.id), { uid: p.uid, jornada: p.jornada, n: p.n ?? 1, criadoEm: cri, atualizadoEm: p.atualizadoEm }));
+  }
+  const ids = new Set(S.todosPalpites.map(p => p.id));
+  for (const r of S.todosReg) if (!ids.has(r.id)) ops.push(deleteDoc(doc(db, "registos", r.id)));
+  const res = await Promise.allSettled(ops);
+  res.filter(x => x.status === "rejected").forEach(x => console.error(x.reason));
+}
+
+function pararCoord() { unsubsCoord.forEach(u => u()); unsubsCoord = []; }
+function atualizarCoord() {
+  if (!souCoord()) { pararCoord(); if (!souAdmin()) S.registos = []; return; }
+  if (unsubsCoord.length) return;
+  const erro = e => { console.error(e); pararCoord(); };
+  unsubsCoord.push(onSnapshot(collection(db, "registos"), s => { S.registos = s.docs.map(d => ({ id: d.id, ...d.data() })); render(); }, erro));
+  unsubsCoord.push(onSnapshot(collection(db, "bloqueados"), s => { S.bloqueados = {}; s.forEach(d => { S.bloqueados[d.id] = d.data(); }); render(); }, erro));
+}
 function iniciarAdmin() {
   if (unsubsAdmin.length) return;
   // Se uma escuta falhar (por exemplo logo a seguir a ficar admin), volta a tentar.
   const erro = e => { console.error(e); pararAdmin(); setTimeout(() => { if (souAdmin()) iniciarAdmin(); }, 3000); };
-  unsubsAdmin.push(onSnapshot(collection(db, "palpites"), s => { S.todosPalpites = s.docs.map(d => ({ id: d.id, ...d.data({ serverTimestamps: "estimate" }) })); render(); }, erro));
+  unsubsAdmin.push(onSnapshot(collection(db, "palpites"), s => {
+    S.todosPalpites = s.docs.map(d => ({ id: d.id, _pend: d.metadata.hasPendingWrites, ...d.data({ serverTimestamps: "estimate" }) }));
+    S.palProntos = true; agendarSync(); render();
+  }, erro));
+  unsubsAdmin.push(onSnapshot(collection(db, "registos"), s => { S.todosReg = s.docs.map(d => ({ id: d.id, ...d.data() })); S.regProntos = true; agendarSync(); }, erro));
   unsubsAdmin.push(onSnapshot(collection(db, "privado"), s => { S.privados = {}; s.forEach(d => { S.privados[d.id] = d.data(); }); render(); }, erro));
   unsubsAdmin.push(onSnapshot(collection(db, "bloqueados"), s => { S.bloqueados = {}; s.forEach(d => { S.bloqueados[d.id] = d.data(); }); render(); }, erro));
 }
 
 onAuthStateChanged(auth, user => {
-  unsubs.forEach(u => u()); unsubs = []; pararAdmin();
+  unsubs.forEach(u => u()); unsubs = []; pararAdmin(); pararCoord();
   Object.assign(S, {
     user, perfil: undefined, bloqueio: undefined, adminUid: undefined, jornadas: [], meus: [], resultados: [], perfis: {}, maxBol: 3,
-    rascunho: {}, sel: {}, edit: null, confirmar: null, todosPalpites: [], privados: {}, bloqueados: {}
+    rascunho: {}, sel: {}, edit: null, confirmar: null, todosPalpites: [], privados: {}, bloqueados: {},
+    coords: new Set(), meusReg: new Set(), registos: [], todosReg: [], coordJ: null
   });
   if (!user) return render(true);
   const uid = user.uid;
   const ouvir = (ref, fn) => unsubs.push(onSnapshot(ref, fn, e => console.error(e)));
   ouvir(doc(db, "perfis", uid), s => { S.perfil = s.exists() ? s.data() : null; render(); });
-  ouvir(doc(db, "bloqueados", uid), s => { S.bloqueio = s.exists() ? s.data() : null; render(); });
+  ouvir(doc(db, "bloqueados", uid), s => { S.bloqueio = s.exists() ? s.data() : null; atualizarCoord(); render(); });
+  ouvir(collection(db, "coordenadores"), s => { S.coords = new Set(s.docs.map(d => d.id)); atualizarCoord(); render(); });
+  ouvir(query(collection(db, "registos"), where("uid", "==", uid)), s => { S.meusReg = new Set(s.docs.map(d => d.id)); });
   unsubs.push(onSnapshot(doc(db, "config", "admin"), { includeMetadataChanges: true }, s => {
     S.adminUid = s.exists() ? s.data().uid : null;
     if (!souAdmin()) pararAdmin();
@@ -240,6 +278,7 @@ function html() {
   if (S.tab === "resultados") corpo = vistaResultados();
   else if (S.tab === "classificacao") corpo = vistaClassificacao();
   else if (S.tab === "admin" && souAdmin()) corpo = vistaAdmin();
+  else if (S.tab === "coord" && souCoord()) corpo = vistaCoord();
   else { S.tab = "boletim"; corpo = vistaBoletim(); }
   return topo(true) + `<main class="gutter"><div class="col pilha">${bannerAdmin()}${corpo}</div></main>` + barraGuardar();
 }
@@ -253,7 +292,7 @@ function topo(comTabs) {
   return `<header class="topo gutter">
     <div class="col">
       <div><h1 class="logo">Toto<span>Real</span></h1><div class="sub-logo">Realense FC · 1.ª Distrital AF Braga, Série A</div></div>
-      <div class="quem"><b>${esc(S.perfil?.nome || S.user.email)}</b>${souAdmin() && comTabs ? `<button data-tab="admin" ${S.tab === "admin" ? `aria-current="page"` : ""}>Admin</button> · ` : ""}<button data-acao="sair">Sair</button></div>
+      <div class="quem"><b>${esc(S.perfil?.nome || S.user.email)}</b>${souAdmin() && comTabs ? `<button data-tab="admin" ${S.tab === "admin" ? `aria-current="page"` : ""}>Admin</button> · ` : ""}${souCoord() && !souAdmin() && comTabs ? `<button data-tab="coord" ${S.tab === "coord" ? `aria-current="page"` : ""}>Coordenação</button> · ` : ""}<button data-acao="sair">Sair</button></div>
     </div>
     ${comTabs ? `<nav class="col tabs" role="tablist">${tabs.map(([k, r]) =>
       `<button class="tab" role="tab" aria-selected="${S.tab === k}" data-tab="${k}">${r}</button>`).join("")}</nav>` : ""}
@@ -506,6 +545,43 @@ function vistaClassificacao() {
   </div>`;
 }
 
+/* Coordenação: quem já registou boletim, a que horas, e quem falta. Sem palpites nem emails. */
+function vistaCoord() {
+  if (!S.jornadas.length) return aviso("Ainda não há jornadas", "Quando o administrador lançar a primeira jornada, vês aqui quem já registou boletim.");
+  const atual = jornadaAtual() || S.jornadas[S.jornadas.length - 1];
+  const j = S.jornadas.find(x => x.id === S.coordJ) || atual;
+  const est = estadoJornada(j);
+  const porNome = (a, b) => nomeDe(a).localeCompare(nomeDe(b), "pt");
+  const porUid = {};
+  for (const r of S.registos.filter(r => r.jornada === j.id).sort(porQuando)) (porUid[r.uid] ??= []).push(r);
+  const registaram = Object.keys(porUid).filter(u => S.perfis[u]).sort(porNome);
+  const faltam = Object.keys(S.perfis).filter(u => !porUid[u] && !S.bloqueados[u]).sort(porNome);
+  const total = registaram.length + faltam.length;
+  const linhas = registaram.map(u => `<div class="jogador-adm"><div>
+      <div class="nm">${esc(nomeDe(u))}${porUid[u].length > 1 ? ` <span class="chip">${porUid[u].length} boletins</span>` : ""}</div>
+      ${porUid[u].map((r, i) => {
+        const sub = toDate(r.criadoEm), alt = toDate(r.atualizadoEm);
+        return `<div class="em">${porUid[u].length > 1 ? `Boletim ${i + 1}: s` : "S"}ubmetido ${esc(fmtDH(sub))}${alt - sub > 1000 ? ` · alterado ${esc(fmtDH(alt))}` : ""}</div>`;
+      }).join("")}
+    </div></div>`).join("");
+  return `<section class="cartao admin-sec pilha">
+      <div class="cab-jornada"><div><p class="eyebrow">Coordenação</p><h2>Jornada ${j.numero}</h2></div><span class="chip ${est}">${esc(ROT_ESTADO[est])}</span></div>
+      <p class="nota">${est === "por-abrir" ? `Abre ${esc(fmtDH(toDate(j.abertura)))}.` : `${est === "aberta" ? "Fecha" : "Fechou"} ${esc(fmtDH(toDate(j.prazo)))}.`}
+        <b>${registaram.length} de ${total}</b> ${total === 1 ? "jogador já registou" : "jogadores já registaram"} boletim.</p>
+      <div class="campo"><label for="coord-j">Ver outra jornada</label>
+        <select id="coord-j" data-coord-j="1">${S.jornadas.map(x => `<option value="${x.id}" ${x.id === j.id ? "selected" : ""}>Jornada ${x.numero}${x.id === atual.id ? " (atual)" : ""}</option>`).join("")}</select></div>
+    </section>
+    <section class="cartao admin-sec pilha">
+      <div><p class="eyebrow">Já registaram (${registaram.length})</p></div>
+      <div>${linhas || `<p class="nota">Ainda ninguém registou boletim nesta jornada.</p>`}</div>
+    </section>
+    <section class="cartao admin-sec pilha">
+      <div><p class="eyebrow">Ainda não registaram (${faltam.length})</p></div>
+      ${faltam.length ? `<p style="margin:0">${faltam.map(u => esc(nomeDe(u))).join(", ")}</p>` : `<p class="nota">Já toda a gente registou.</p>`}
+    </section>
+    <p class="nota">Os palpites de cada um aparecem no separador Resultados quando saírem os resultados da jornada.</p>`;
+}
+
 /* Admin */
 function vistaAdmin() {
   return `<section class="cartao admin-sec pilha">${adminJornadas()}</section>
@@ -631,9 +707,10 @@ function adminJogadores() {
     const n = S.todosPalpites.filter(p => p.uid === u).length;
     const conf = S.confirmar === "apagar-u:" + u;
     return `<div class="jogador-adm">
-      <div><div class="nm">${esc(nomeDe(u))} ${bloq ? `<span class="chip fechada">Bloqueado</span>` : ""}${u === S.adminUid ? ` <span class="chip concluida">Admin</span>` : ""}</div>
+      <div><div class="nm">${esc(nomeDe(u))} ${bloq ? `<span class="chip fechada">Bloqueado</span>` : ""}${u === S.adminUid ? ` <span class="chip concluida">Admin</span>` : ""}${S.coords.has(u) ? ` <span class="chip aberta">Coordenador</span>` : ""}</div>
         <div class="em">${esc(S.privados[u]?.email || "")} · ${n} ${n === 1 ? "boletim" : "boletins"}</div></div>
       <div class="acoes">${u === eu ? "" : `
+        ${S.coords.has(u) ? `<button class="btn mini sec" data-acao="tirar-coord" data-u="${u}">Tirar coordenador</button>` : `<button class="btn mini sec" data-acao="dar-coord" data-u="${u}">Tornar coordenador</button>`}
         ${bloq ? `<button class="btn mini sec" data-acao="desbloquear" data-u="${u}">Desbloquear</button>` : `<button class="btn mini sec" data-acao="bloquear" data-u="${u}">Bloquear</button>`}
         <button class="btn mini sec" data-acao="apagar-u" data-u="${u}">Apagar</button>`}</div>
       ${conf ? `<div class="confirmar">Apagar ${esc(nomeDe(u))}? Saem os boletins e o nome dele, e a conta fica sem acesso.
@@ -641,7 +718,8 @@ function adminJogadores() {
     </div>`;
   }).join("");
   return `<div><p class="eyebrow">Admin</p><h2>Jogadores (${ids.length})</h2></div>
-    <p class="nota">Bloquear impede a pessoa de registar boletins. Apagar tira o nome e os boletins e fecha-lhe o acesso.</p>
+    <p class="nota">Bloquear impede a pessoa de registar boletins. Apagar tira o nome e os boletins e fecha-lhe o acesso.
+      O coordenador vê quem já registou boletim e a que horas, mas não vê os palpites nem os emails.</p>
     <div>${linhas || `<p class="nota">Ainda ninguém criou conta.</p>`}</div>
     ${apagados.length ? `<div><p class="eyebrow" style="margin-top:8px">Contas apagadas</p>${apagados.map(([u]) => `<div class="jogador-adm">
       <div class="em">${esc(S.privados[u]?.email || "Conta sem email")}</div>
@@ -716,6 +794,18 @@ async function publicarResultados() {
   toast(nv ? `Resultados publicados. ${nv === 1 ? "Há 1 vencedor" : `Há ${nv} vencedores`}!` : "Resultados publicados. Ninguém acertou em tudo.");
 }
 
+// Apaga os documentos destas coleções com campo == valor, poucos de cada vez (as regras limitam as leituras por pedido).
+async function apagarEmLotes(colecoes, campo, valor) {
+  for (const c of colecoes) {
+    const refs = (await getDocs(query(collection(db, c), where(campo, "==", valor)))).docs.map(s => s.ref);
+    for (let i = 0; i < refs.length; i += 5) {
+      const b = writeBatch(db);
+      refs.slice(i, i + 5).forEach(r => b.delete(r));
+      await b.commit();
+    }
+  }
+}
+
 async function correr(fn, ok) {
   S.ocupado = true; render(true);
   try { await fn(); if (ok) toast(ok); }
@@ -781,6 +871,7 @@ document.addEventListener("input", ev => {
 document.addEventListener("change", ev => {
   const t = ev.target;
   if (t.dataset.imp) { S.importDe = +t.value; render(true); return; }
+  if (t.dataset.coordJ) { S.coordJ = t.value; render(true); return; }
   if (t.dataset.regra && souAdmin()) { const v = +t.value; return correr(() => setDoc(doc(db, "config", "regras"), { maxBoletins: v }), `Agora cada pessoa pode fazer até ${v} ${v === 1 ? "boletim" : "boletins"} por jornada.`); }
   if (t.dataset.ed && S.edit) {
     if (t.dataset.g) { const g = S.edit.jogos.find(x => x.id === t.dataset.g); if (g) g[t.dataset.ed] = t.value; }
@@ -817,7 +908,10 @@ document.addEventListener("click", async ev => {
   if (a === "apagar-bol-sim") {
     const id = t.dataset.id; S.confirmar = null;
     try {
-      await deleteDoc(doc(db, "palpites", id));
+      const b = writeBatch(db);
+      b.delete(doc(db, "palpites", id));
+      if (S.meusReg.has(id)) b.delete(doc(db, "registos", id));
+      await b.commit();
       delete S.rascunho[`${t.dataset.j}|${id}`]; delete S.sel[t.dataset.j];
       toast("Boletim apagado.");
     } catch (e) {
@@ -840,10 +934,18 @@ document.addEventListener("click", async ev => {
         const n = slotLivre(j.id);
         if (!n) throw { msg: `Já tens ${S.maxBol} boletins nesta jornada, que é o máximo.` };
         const id = idBoletim(j.id, S.user.uid, n);
-        await setDoc(doc(db, "palpites", id), { uid: S.user.uid, jornada: j.id, n, escolhas, criadoEm: serverTimestamp(), atualizadoEm: serverTimestamp() });
+        const b = writeBatch(db);
+        b.set(doc(db, "palpites", id), { uid: S.user.uid, jornada: j.id, n, escolhas, criadoEm: serverTimestamp(), atualizadoEm: serverTimestamp() });
+        b.set(doc(db, "registos", id), { uid: S.user.uid, jornada: j.id, n, criadoEm: serverTimestamp(), atualizadoEm: serverTimestamp() });
+        await b.commit();
         S.sel[j.id] = id;
       } else {
-        await updateDoc(doc(db, "palpites", sel), { escolhas, atualizadoEm: serverTimestamp() });
+        const p = S.meus.find(x => x.id === sel);
+        const b = writeBatch(db);
+        b.update(doc(db, "palpites", sel), { escolhas, atualizadoEm: serverTimestamp() });
+        if (S.meusReg.has(sel)) b.set(doc(db, "registos", sel), { atualizadoEm: serverTimestamp() }, { merge: true });
+        else b.set(doc(db, "registos", sel), { uid: S.user.uid, jornada: j.id, n: p?.n ?? 1, criadoEm: p?.criadoEm || serverTimestamp(), atualizadoEm: serverTimestamp() });
+        await b.commit();
       }
       delete S.rascunho[`${j.id}|${sel}`];
       toast("Boletim registado. Boa sorte!");
@@ -879,7 +981,7 @@ document.addEventListener("click", async ev => {
     S.edit = { id: jid(n), numero: n, abertura: toLocalInput(ab), prazo: toLocalInput(prazo), realense: "", jogos: [{ id: "g1", casa: "", fora: "", inicio: toLocalInput(ini) }], resultados: {}, erro: "" };
     return render(true);
   }
-  if (!S.edit && !["bloquear", "desbloquear", "apagar-u", "apagar-u-sim"].includes(a)) return;
+  if (!S.edit && !["bloquear", "desbloquear", "apagar-u", "apagar-u-sim", "dar-coord", "tirar-coord"].includes(a)) return;
   if (a === "res") { S.edit.resultados[t.dataset.g] = t.dataset.v; return render(true); }
   if (a === "mais-jogo") {
     const max = Math.max(0, ...S.edit.jogos.map(g => +g.id.slice(1)));
@@ -904,13 +1006,16 @@ document.addEventListener("click", async ev => {
     return correr(async () => {
       const b = writeBatch(db);
       b.delete(doc(db, "jornadas", id)); b.delete(doc(db, "resultados", id));
-      (await getDocs(query(collection(db, "palpites"), where("jornada", "==", id)))).forEach(s => b.delete(s.ref));
-      await b.commit(); S.edit = null;
+      await b.commit();
+      await apagarEmLotes(["palpites", "registos"], "jornada", id);
+      S.edit = null;
     }, "Jornada apagada.");
   }
   const u = t.dataset.u;
   if (a === "bloquear") return correr(() => setDoc(doc(db, "bloqueados", u), { apagado: false, em: serverTimestamp() }), "Jogador bloqueado.");
   if (a === "desbloquear") return correr(() => deleteDoc(doc(db, "bloqueados", u)), "Acesso devolvido.");
+  if (a === "dar-coord") return correr(() => setDoc(doc(db, "coordenadores", u), { em: serverTimestamp() }), `${nomeDe(u)} agora é coordenador.`);
+  if (a === "tirar-coord") return correr(() => deleteDoc(doc(db, "coordenadores", u)), `${nomeDe(u)} deixou de ser coordenador.`);
   if (a === "apagar-u") { S.confirmar = "apagar-u:" + u; return render(true); }
   if (a === "apagar-u-sim") {
     S.confirmar = null;
@@ -920,8 +1025,9 @@ document.addEventListener("click", async ev => {
       b.set(doc(db, "bloqueados", u), { apagado: true, em: serverTimestamp() });
       b.delete(doc(db, "perfis", u));
       if (p?.chave) b.delete(doc(db, "nomes", p.chave));
-      (await getDocs(query(collection(db, "palpites"), where("uid", "==", u)))).forEach(s => b.delete(s.ref));
+      b.delete(doc(db, "coordenadores", u));
       await b.commit();
+      await apagarEmLotes(["palpites", "registos"], "uid", u);
     }, "Jogador apagado.");
   }
 });

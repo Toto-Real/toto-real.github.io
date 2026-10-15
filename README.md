@@ -1,6 +1,6 @@
 # TotoReal
 
-**Link:** https://salvyri.github.io/totoreal/
+**Link:** https://toto-real.github.io
 
 O totoloto semanal do Realense FC. Todas as semanas cada jogador marca 1, X ou 2 nos jogos da Série A da 1.ª Distrital AF Braga, sem contar o jogo do Realense. Só ganha quem acertar em todos.
 

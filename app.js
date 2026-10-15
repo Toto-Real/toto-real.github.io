@@ -473,7 +473,7 @@ function adminJornadas() {
     const est = estadoJornada(j, agora);
     const nBol = S.todosPalpites.filter(p => p.jornada === j.id).length;
     const aEditar = S.edit?.id === j.id;
-    return `<div class="linha-j" ${j.id === atual?.id ? `style="background:var(--verde-claro);margin-inline:-16px;padding-inline:16px"` : ""}>
+    return `<div class="linha-j" ${j.id === atual?.id ? `style="background:var(--azul-claro);margin-inline:-16px;padding-inline:16px"` : ""}>
       <span class="jn">J${j.numero}</span>
       <div class="info"><span class="chip ${est}">${esc(ROT_ESTADO[est])}</span> ${nBol} ${nBol === 1 ? "boletim" : "boletins"}<br>
         Fecha ${esc(fmtDH(toDate(j.prazo)))}</div>

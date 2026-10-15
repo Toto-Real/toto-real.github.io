@@ -10,8 +10,9 @@ O totoloto semanal do Realense FC. Todas as semanas cada jogador marca 1, X ou 2
 - **Prazo:** sexta-feira às 21:00. Se algum jogo do TotoReal começar antes disso, o prazo passa para as 12:30 do dia desse jogo. O admin pode mudar a abertura e o prazo de qualquer jornada.
 - **Jogo adiado:** o admin marca-o como "Anulado" e esse jogo deixa de contar nessa jornada.
 - **Vencedor:** quem acertar em todos os jogos que contam. Se ninguém acertar, ninguém ganha.
+- **Vários boletins:** cada pessoa pode fazer até 3 boletins por jornada (o admin muda o número em **Admin > Regras**), e cada um tem de ser diferente dos outros dessa pessoa em pelo menos um jogo. Pode alterá-los ou apagá-los até ao prazo. Nos resultados aparecem como Papi(1), Papi(2), e o admin vê a hora em que cada boletim foi submetido e a da última alteração.
 - **Palpites dos outros:** ficam escondidos até saírem os resultados e depois toda a gente os vê.
-- **Classificação:** há duas tabelas. "Mais vencedores" conta as jornadas ganhas e "Mais certeiros" conta o total de jogos acertados.
+- **Classificação:** há duas tabelas. "Mais vencedores" conta as jornadas ganhas (no máximo uma por pessoa em cada jornada) e "Mais certeiros" conta o total de jogos acertados, usando o melhor boletim de cada pessoa em cada jornada.
 - **Contas:** entra-se com email e palavra-passe e cada pessoa escolhe um nome público, que não pode estar repetido.
 - **Admin:** vê os emails e os boletins de toda a gente, cria e edita jornadas, lança resultados, bloqueia jogadores e apaga contas.
 

@@ -4,7 +4,7 @@ import {
   signOut, sendPasswordResetEmail, connectAuthEmulator
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import {
-  getFirestore, connectFirestoreEmulator, doc, getDoc, getDocs, setDoc, deleteDoc, collection,
+  getFirestore, connectFirestoreEmulator, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection,
   query, where, onSnapshot, writeBatch, serverTimestamp, Timestamp
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
@@ -83,8 +83,8 @@ function msgErroAuth(e) {
 /* ---------- Estado ---------- */
 const S = {
   user: null, perfil: undefined, bloqueio: undefined, adminUid: undefined,
-  jornadas: [], meus: {}, resultados: [], perfis: {},
-  tab: "boletim", rascunho: {}, aGuardar: false,
+  jornadas: [], meus: [], resultados: [], perfis: {}, maxBol: 3,
+  tab: "boletim", rascunho: {}, sel: {}, aGuardar: false,
   modo: "entrar", f: {}, erroEntrar: "", okEntrar: "", erroNome: "", aEntrar: false,
   abertos: new Set(),
   todosPalpites: [], privados: {}, bloqueados: {}, edit: null, confirmar: null, importDe: null, ocupado: false,
@@ -102,7 +102,7 @@ function iniciarAdmin() {
   if (unsubsAdmin.length) return;
   // Se uma escuta falhar (por exemplo logo a seguir a ficar admin), volta a tentar.
   const erro = e => { console.error(e); pararAdmin(); setTimeout(() => { if (souAdmin()) iniciarAdmin(); }, 3000); };
-  unsubsAdmin.push(onSnapshot(collection(db, "palpites"), s => { S.todosPalpites = s.docs.map(d => d.data()); render(); }, erro));
+  unsubsAdmin.push(onSnapshot(collection(db, "palpites"), s => { S.todosPalpites = s.docs.map(d => ({ id: d.id, ...d.data({ serverTimestamps: "estimate" }) })); render(); }, erro));
   unsubsAdmin.push(onSnapshot(collection(db, "privado"), s => { S.privados = {}; s.forEach(d => { S.privados[d.id] = d.data(); }); render(); }, erro));
   unsubsAdmin.push(onSnapshot(collection(db, "bloqueados"), s => { S.bloqueados = {}; s.forEach(d => { S.bloqueados[d.id] = d.data(); }); render(); }, erro));
 }
@@ -110,8 +110,8 @@ function iniciarAdmin() {
 onAuthStateChanged(auth, user => {
   unsubs.forEach(u => u()); unsubs = []; pararAdmin();
   Object.assign(S, {
-    user, perfil: undefined, bloqueio: undefined, adminUid: undefined, jornadas: [], meus: {}, resultados: [], perfis: {},
-    rascunho: {}, edit: null, confirmar: null, todosPalpites: [], privados: {}, bloqueados: {}
+    user, perfil: undefined, bloqueio: undefined, adminUid: undefined, jornadas: [], meus: [], resultados: [], perfis: {}, maxBol: 3,
+    rascunho: {}, sel: {}, edit: null, confirmar: null, todosPalpites: [], privados: {}, bloqueados: {}
   });
   if (!user) return render(true);
   const uid = user.uid;
@@ -133,8 +133,9 @@ onAuthStateChanged(auth, user => {
     render();
   });
   ouvir(collection(db, "perfis"), s => { const p = {}; s.forEach(d => { p[d.id] = d.data(); }); S.perfis = p; render(); });
+  ouvir(doc(db, "config", "regras"), s => { S.maxBol = s.exists() ? s.data().maxBoletins : 3; render(); });
   ouvir(query(collection(db, "palpites"), where("uid", "==", uid)), s => {
-    const m = {}; s.forEach(d => { const p = d.data(); m[p.jornada] = p; }); S.meus = m; render();
+    S.meus = s.docs.map(d => ({ id: d.id, ...d.data({ serverTimestamps: "estimate" }) })); render();
   });
 });
 
@@ -158,15 +159,38 @@ function jornadaAtual() {
   if (fechadas.length) return fechadas[fechadas.length - 1];
   return S.jornadas.find(j => estadoJornada(j, agora) === "por-abrir") || null;
 }
-function escolhaEfetiva(j, gid) {
-  const r = S.rascunho[j.id];
-  if (r && r[gid]) return r[gid];
-  return S.meus[j.id]?.escolhas?.[gid] || null;
+/* Boletins: cada pessoa pode ter até S.maxBol por jornada. Numeram-se pela ordem em que foram submetidos. */
+const quando = p => { const t = p.criadoEm || p.atualizadoEm; return t ? toDate(t).getTime() : 0; };
+const porQuando = (a, b) => quando(a) - quando(b) || a.id.localeCompare(b.id);
+const meusDe = jid => S.meus.filter(p => p.jornada === jid).sort(porQuando);
+const idBoletim = (jid, uid, n) => n === 1 ? `${jid}_${uid}` : `${jid}_${uid}_${n}`;
+function slotLivre(jid) {
+  const usados = new Set(meusDe(jid).map(p => p.n || 1));
+  for (let n = 1; n <= S.maxBol; n++) if (!usados.has(n)) return n;
+  return 0;
 }
-function alterado(j) {
-  const r = S.rascunho[j.id] || {};
-  const guardado = S.meus[j.id]?.escolhas || {};
+// Boletim que está à vista: o id de um boletim registado, ou "novo".
+function selDe(j) {
+  const meus = meusDe(j.id), s = S.sel[j.id];
+  if (s === "novo" && estadoJornada(j) === "aberta" && slotLivre(j.id)) return "novo";
+  if (s && meus.some(p => p.id === s)) return s;
+  return meus.length ? meus[0].id : "novo";
+}
+function escolhaEfetiva(j, sel, gid) {
+  const r = S.rascunho[`${j.id}|${sel}`];
+  if (r && r[gid]) return r[gid];
+  if (sel === "novo") return null;
+  return S.meus.find(p => p.id === sel)?.escolhas?.[gid] || null;
+}
+function alterado(j, sel) {
+  const r = S.rascunho[`${j.id}|${sel}`] || {};
+  const guardado = sel === "novo" ? {} : (S.meus.find(p => p.id === sel)?.escolhas || {});
   return Object.entries(r).some(([g, v]) => guardado[g] !== v);
+}
+// Número do outro boletim igual a este (0 se for diferente de todos).
+function igualA(j, sel) {
+  const ativos = jogosAtivos(j);
+  return meusDe(j.id).findIndex(p => p.id !== sel && ativos.every(g => p.escolhas?.[g.id] === escolhaEfetiva(j, sel, g.id))) + 1;
 }
 
 function gerarJornadas(aPartirDe) {
@@ -301,7 +325,8 @@ function vistaBoletim() {
   const agora = Date.now();
   const prazo = toDate(j.prazo), abertura = toDate(j.abertura);
   const ativos = jogosAtivos(j);
-  const meu = S.meus[j.id];
+  const meus = meusDe(j.id);
+  const sel = selDe(j);
   const podeMarcar = est === "aberta";
   const res = j.resultados || {};
 
@@ -316,30 +341,46 @@ function vistaBoletim() {
   }
 
   const linhas = ativos.map((g, i) => {
-    const e = escolhaEfetiva(j, g.id);
+    const e = escolhaEfetiva(j, sel, g.id);
     const d = toDate(g.inicio);
     return `<div class="bol-linha">
       <span class="num">${i + 1}</span>
       <div class="jogo"><div class="eq">${esc(g.casa)}</div><div class="eq">${esc(g.fora)}</div>
         <div class="quando">${esc(fmtDH(d))}</div></div>
       <div class="marcas" role="group" aria-label="${esc(g.casa)} contra ${esc(g.fora)}">
-        ${["1", "X", "2"].map(v => `<button class="marca${res[g.id] === v ? " real" : ""}" data-acao="marcar" data-j="${j.id}" data-g="${g.id}" data-v="${v}"
+        ${["1", "X", "2"].map(v => `<button class="marca${res[g.id] === v ? " real" : ""}" data-acao="marcar" data-j="${j.id}" data-b="${sel}" data-g="${g.id}" data-v="${v}"
           aria-pressed="${e === v}" ${podeMarcar ? "" : "disabled"}>${v}</button>`).join("")}
       </div>
     </div>`;
   }).join("");
 
+  const numSel = sel === "novo" ? meus.length + 1 : meus.findIndex(p => p.id === sel) + 1;
+  const podeNovo = podeMarcar && slotLivre(j.id) > 0;
+  const tabsBol = meus.length ? `<div class="bols" role="group" aria-label="Os teus boletins">
+      ${meus.map((p, i) => `<button class="bol-tab" data-acao="ver-bol" data-j="${j.id}" data-b="${p.id}" aria-pressed="${sel === p.id}">Boletim ${i + 1}</button>`).join("")}
+      ${sel === "novo" ? `<button class="bol-tab" data-acao="ver-bol" data-j="${j.id}" data-b="novo" aria-pressed="true">Boletim ${numSel}</button>`
+        : (podeNovo ? `<button class="bol-tab novo" data-acao="ver-bol" data-j="${j.id}" data-b="novo">+ Novo boletim</button>` : "")}
+    </div>` : "";
+
   let pe = "";
   if (est === "por-abrir") pe = `<span class="estado">Podes preencher o boletim a partir de ${esc(fmtDH(abertura))}.</span>`;
-  else if (est === "fechada") pe = meu
-    ? `<span class="estado ok">Boletim registado. Os resultados saem quando o administrador os lançar.</span>`
+  else if (est === "fechada") pe = meus.length
+    ? `<span class="estado ok">${meus.length === 1 ? "Boletim registado" : `Registaste ${meus.length} boletins`}. Os resultados saem quando o administrador os lançar.</span>`
     : `<span class="estado">Não registaste boletim nesta jornada.</span>`;
+  else if (sel === "novo" && meus.length) pe = `<span class="estado">Tem de ser diferente dos teus outros boletins em pelo menos um jogo.</span>
+    <span class="links">Copiar o ${meus.map((p, i) => `<button class="link" data-acao="copiar-bol" data-j="${j.id}" data-de="${p.id}">boletim ${i + 1}</button>`).join(" ou o ")}
+      · <button class="link" data-acao="cancelar-novo" data-j="${j.id}">Cancelar</button></span>`;
+  else if (sel !== "novo") pe = S.confirmar === "apagar-bol:" + sel
+    ? `<div class="confirmar">Apagar o boletim ${numSel}?
+        <button class="btn mini perigo" data-acao="apagar-bol-sim" data-j="${j.id}" data-id="${sel}">Apagar</button><button class="btn mini sec" data-acao="cancelar-conf">Manter</button></div>`
+    : `<button class="link perigo" data-acao="apagar-bol" data-id="${sel}">Apagar o boletim ${numSel}</button>`;
 
   const proxima = S.jornadas.find(x => x.numero > j.numero && estadoJornada(x) === "por-abrir");
   return `<div class="cab-jornada">
       <div><p class="eyebrow">${esc(ROT_ESTADO[est])}</p><h2 class="titulo">Jornada ${j.numero}</h2></div>
       ${cabDir}
     </div>
+    ${tabsBol}
     <div class="boletim">
       <div class="bol-cab"><span></span><span>Jogo</span><span class="tres"><b>1</b><b>X</b><b>2</b></span></div>
       ${linhas || `<div class="bol-linha"><span></span><span class="nota">Esta jornada não tem jogos.</span><span></span></div>`}
@@ -348,6 +389,7 @@ function vistaBoletim() {
     <div class="extra">
       <span>Fora do TotoReal: ${esc(j.realense || "jogo do Realense")}</span>
       <span>Só ganha quem acertar nos ${ativos.length} jogos.</span>
+      ${S.maxBol > 1 ? `<span>Podes fazer até ${S.maxBol} boletins diferentes.</span>` : ""}
     </div>
     ${est !== "aberta" && proxima ? `<p class="nota">A Jornada ${proxima.numero} abre ${esc(fmtDH(toDate(proxima.abertura)))}.</p>` : ""}`;
 }
@@ -357,52 +399,71 @@ function barraGuardar() {
   const j = jornadaAtual();
   if (!j || estadoJornada(j) !== "aberta") return "";
   const ativos = jogosAtivos(j);
-  const faltam = ativos.filter(g => !escolhaEfetiva(j, g.id)).length;
-  const meu = S.meus[j.id];
-  const mudou = alterado(j);
-  let txt, pode = false, rot = "Registar boletim";
+  const sel = selDe(j);
+  const meus = meusDe(j.id);
+  const faltam = ativos.filter(g => !escolhaEfetiva(j, sel, g.id)).length;
+  const mudou = alterado(j, sel);
+  const igual = faltam ? 0 : igualA(j, sel);
+  let txt, pode = false, rot = sel === "novo" && meus.length ? `Registar boletim ${meus.length + 1}` : "Registar boletim";
   if (faltam) txt = `Falta${faltam === 1 ? "" : "m"} ${faltam} ${faltam === 1 ? "jogo" : "jogos"} por marcar`;
-  else if (!meu) { txt = "Boletim completo"; pode = true; }
-  else if (mudou) { txt = "Tens alterações por registar"; pode = true; rot = "Registar alterações"; }
+  else if (sel === "novo") {
+    if (igual) txt = `É igual ao boletim ${igual}. Muda pelo menos um jogo.`;
+    else { txt = "Boletim completo"; pode = true; }
+  }
+  else if (mudou) {
+    rot = "Registar alterações";
+    if (igual) txt = `Ficou igual ao boletim ${igual}. Muda pelo menos um jogo.`;
+    else { txt = "Tens alterações por registar"; pode = true; }
+  }
   else { txt = `Registado. Podes mudar até ${fmtDH(toDate(j.prazo))}.`; rot = "Registado"; }
   return `<div class="barra-guardar gutter"><div class="col">
     <span class="estado">${esc(txt)}</span>
-    <button class="btn" data-acao="guardar" data-j="${j.id}" ${pode && !S.aGuardar ? "" : "disabled"}>${S.aGuardar ? "A registar…" : rot}</button>
+    <button class="btn" data-acao="guardar" data-j="${j.id}" data-b="${sel}" ${pode && !S.aGuardar ? "" : "disabled"}>${S.aGuardar ? "A registar…" : rot}</button>
   </div></div>`;
 }
 
 /* Resultados */
+// Boletins de uma jornada publicada. Os resultados antigos tinham um boletim por pessoa, guardado pelo uid.
+function boletinsDe(r) {
+  if (r.boletins) return Object.entries(r.boletins).map(([id, b]) => ({ id, ...b }));
+  return Object.keys(r.escolhas || {}).map(uid => ({ id: uid, uid, n: 1, de: 1, escolhas: r.escolhas[uid], acertos: r.acertos?.[uid] || 0 }));
+}
+const rotulo = b => esc(nomeDe(b.uid)) + (b.de > 1 ? `(${b.n})` : "");
+
 function vistaResultados() {
   if (!S.resultados.length) return aviso("Ainda sem resultados", "Os resultados de cada jornada aparecem aqui quando o administrador os lançar. Nessa altura também vês o boletim de toda a gente.");
   return S.resultados.map(r => {
     const jogos = (r.jogos || []).slice().sort((a, b) => toDate(a.inicio) - toDate(b.inicio));
     const res = r.resultados || {};
-    const contam = jogos.filter(g => ["1", "X", "2"].includes(res[g.id]));
-    const jogadores = Object.keys(r.escolhas || {}).filter(uid => S.perfis[uid]);
-    const venc = (r.vencedores || []).filter(uid => S.perfis[uid]);
-    const melhor = Math.max(0, ...jogadores.map(u => r.acertos?.[u] || 0));
-    const melhores = jogadores.filter(u => (r.acertos?.[u] || 0) === melhor);
+    const bols = boletinsDe(r).filter(b => S.perfis[b.uid]);
+    const ac = b => b.acertos || 0;
+    const venc = bols.filter(b => r.vencedoresBoletins ? r.vencedoresBoletins.includes(b.id) : (r.vencedores || []).includes(b.uid));
+    const nVenc = new Set(venc.map(b => b.uid)).size;
+    const melhor = Math.max(0, ...bols.map(ac));
+    const melhores = bols.filter(b => ac(b) === melhor);
     const eu = S.user.uid;
     const aberto = S.abertos.has(r.id);
-    const ordem = jogadores.slice().sort((a, b) => (r.acertos?.[b] || 0) - (r.acertos?.[a] || 0) || nomeDe(a).localeCompare(nomeDe(b), "pt"));
+    const ordem = bols.slice().sort((a, b) => ac(b) - ac(a) || nomeDe(a.uid).localeCompare(nomeDe(b.uid), "pt") || a.n - b.n);
     const banner = venc.length
-      ? `<div class="vencedores"><b>${venc.length === 1 ? "Vencedor" : "Vencedores"}:</b> ${venc.map(u => esc(nomeDe(u))).join(", ")}</div>`
-      : `<div class="vencedores ninguem">Ninguém acertou em tudo.${jogadores.length ? ` O melhor foi ${melhor} em ${r.validos}: ${melhores.map(u => esc(nomeDe(u))).join(", ")}.` : ""}</div>`;
-    const meuTxt = r.escolhas?.[eu] ? `<p class="nota" style="margin-top:10px">Acertaste ${r.acertos?.[eu] || 0} em ${r.validos}.</p>` : "";
+      ? `<div class="vencedores"><b>${nVenc === 1 ? "Vencedor" : "Vencedores"}:</b> ${venc.map(rotulo).join(", ")}</div>`
+      : `<div class="vencedores ninguem">Ninguém acertou em tudo.${bols.length ? ` O melhor foi ${melhor} em ${r.validos}: ${melhores.map(rotulo).join(", ")}.` : ""}</div>`;
+    const meus = bols.filter(b => b.uid === eu).sort((a, b) => a.n - b.n);
+    const meuTxt = meus.length === 1 ? `<p class="nota" style="margin-top:10px">Acertaste ${ac(meus[0])} em ${r.validos}.</p>`
+      : meus.length ? `<p class="nota" style="margin-top:10px">Os teus boletins: ${meus.map(b => `boletim ${b.n} com ${ac(b)} em ${r.validos}`).join(", ")}.</p>` : "";
     return `<section class="cartao">
-      <div class="res-cab"><h3>Jornada ${r.numero}</h3><span class="nota">${jogadores.length} ${jogadores.length === 1 ? "boletim" : "boletins"}</span></div>
+      <div class="res-cab"><h3>Jornada ${r.numero}</h3><span class="nota">${bols.length} ${bols.length === 1 ? "boletim" : "boletins"}</span></div>
       ${banner}
       <ol class="lista-jogos">${jogos.map((g, i) => `<li><span class="num">${i + 1}</span><span>${esc(g.casa)} – ${esc(g.fora)}</span>
         ${res[g.id] === "A" ? `<span class="res anulado">Anulado</span>` : `<span class="res">${esc(res[g.id] || "?")}</span>`}</li>`).join("")}</ol>
       ${meuTxt}
-      ${jogadores.length ? `<button class="link" style="margin-top:8px" data-acao="abrir-res" data-id="${r.id}" aria-expanded="${aberto}">${aberto ? "Esconder boletins" : "Ver o boletim de toda a gente"}</button>` : ""}
+      ${bols.length ? `<button class="link" style="margin-top:8px" data-acao="abrir-res" data-id="${r.id}" aria-expanded="${aberto}">${aberto ? "Esconder boletins" : "Ver o boletim de toda a gente"}</button>` : ""}
       ${aberto ? `<div class="tabela-wrap"><table>
         <thead><tr><th>Jogador</th>${jogos.map((g, i) => `<th class="c">${i + 1}</th>`).join("")}<th class="c">Certos</th></tr></thead>
-        <tbody>${ordem.map(u => `<tr class="${u === eu ? "eu" : ""}"><td>${esc(nomeDe(u))}</td>${jogos.map(g => {
-          const p = r.escolhas[u]?.[g.id], real = res[g.id];
+        <tbody>${ordem.map(b => `<tr class="${b.uid === eu ? "eu" : ""}"><td>${rotulo(b)}</td>${jogos.map(g => {
+          const p = b.escolhas?.[g.id], real = res[g.id];
           const cls = !["1", "X", "2"].includes(real) ? "na" : (p === real ? "sim" : "nao");
           return `<td class="c"><span class="pk ${cls}">${esc(p || "–")}</span></td>`;
-        }).join("")}<td class="c n">${r.acertos?.[u] || 0}/${r.validos}</td></tr>`).join("")}</tbody>
+        }).join("")}<td class="c n">${ac(b)}/${r.validos}</td></tr>`).join("")}</tbody>
       </table></div>` : ""}
     </section>`;
   }).join("");
@@ -415,12 +476,15 @@ function ranking(lista, chave) {
 }
 function vistaClassificacao() {
   const est = {};
+  // Quem fez vários boletins conta o melhor de cada jornada, e no máximo uma vitória por jornada.
   for (const r of S.resultados) {
-    for (const [uid, n] of Object.entries(r.acertos || {})) {
+    const melhor = {};
+    for (const b of boletinsDe(r)) melhor[b.uid] = Math.max(melhor[b.uid] ?? 0, b.acertos || 0);
+    for (const [uid, n] of Object.entries(melhor)) {
       const e = est[uid] ??= { uid, vit: 0, ac: 0, jog: 0, poss: 0 };
       e.ac += n; e.jog += 1; e.poss += r.validos || 0;
     }
-    for (const uid of r.vencedores || []) (est[uid] ??= { uid, vit: 0, ac: 0, jog: 0, poss: 0 }).vit += 1;
+    for (const uid of new Set(r.vencedores || [])) (est[uid] ??= { uid, vit: 0, ac: 0, jog: 0, poss: 0 }).vit += 1;
   }
   const todos = Object.values(est).filter(e => S.perfis[e.uid]);
   if (!todos.length) return aviso("Classificação vazia", "A classificação começa a contar quando saírem os resultados da primeira jornada.");
@@ -430,12 +494,12 @@ function vistaClassificacao() {
   const linha = (x, cols) => `<tr class="${x.uid === eu ? "eu" : ""}"><td class="pos">${x.pos === 1 ? `<span class="medalha">1.º</span>` : x.pos + ".º"}</td><td>${esc(nomeDe(x.uid))}</td>${cols}</tr>`;
   return `<div class="classif">
     <section class="cartao">
-      <h3>Mais vencedores</h3><p class="nota">Jornadas ganhas (acertar em todos os jogos). Em caso de empate conta o total de acertos.</p>
+      <h3>Mais vencedores</h3><p class="nota">Jornadas ganhas (acertar em todos os jogos). Cada jornada conta uma vez por pessoa. Em caso de empate conta o total de acertos.</p>
       <div class="tabela-wrap"><table><thead><tr><th></th><th>Jogador</th><th class="c">Vitórias</th><th class="c">Acertos</th></tr></thead>
       <tbody>${venc.map(x => linha(x, `<td class="c n">${x.vit}</td><td class="c n">${x.ac}</td>`)).join("")}</tbody></table></div>
     </section>
     <section class="cartao">
-      <h3>Mais certeiros</h3><p class="nota">Total de jogos acertados em todas as jornadas.</p>
+      <h3>Mais certeiros</h3><p class="nota">Total de jogos acertados em todas as jornadas. Quem fez mais do que um boletim conta o melhor de cada jornada.</p>
       <div class="tabela-wrap"><table><thead><tr><th></th><th>Jogador</th><th class="c">Acertos</th><th class="c">Jorn.</th><th class="c">%</th></tr></thead>
       <tbody>${cert.map(x => linha(x, `<td class="c n">${x.ac}</td><td class="c n">${x.jog}</td><td class="c n">${x.poss ? Math.round(100 * x.ac / x.poss) : 0}</td>`)).join("")}</tbody></table></div>
     </section>
@@ -445,7 +509,28 @@ function vistaClassificacao() {
 /* Admin */
 function vistaAdmin() {
   return `<section class="cartao admin-sec pilha">${adminJornadas()}</section>
+    <section class="cartao admin-sec pilha">${adminRegras()}</section>
     <section class="cartao admin-sec pilha">${adminJogadores()}</section>`;
+}
+
+function adminRegras() {
+  return `<div><p class="eyebrow">Admin</p><h2>Regras</h2></div>
+    <div class="campo"><label for="max-bol">Boletins por pessoa em cada jornada</label>
+      <select id="max-bol" data-regra="maxBoletins" ${S.ocupado ? "disabled" : ""}>${[1, 2, 3, 4, 5].map(n => `<option value="${n}" ${n === S.maxBol ? "selected" : ""}>${n}</option>`).join("")}</select>
+      <small>Cada boletim tem de ser diferente dos outros da mesma pessoa em pelo menos um jogo.</small></div>`;
+}
+
+// Linhas da tabela de boletins do admin: nome (com o número do boletim) e as horas de submissão e alteração.
+function linhasAdmin(boletins) {
+  const porUid = {};
+  for (const p of boletins.slice().sort(porQuando)) (porUid[p.uid] ??= []).push(p);
+  return Object.values(porUid).sort((a, b) => nomeDe(a[0].uid).localeCompare(nomeDe(b[0].uid), "pt")).flatMap(lista => lista.map((p, i) => {
+    const sub = p.criadoEm ? toDate(p.criadoEm) : null, alt = p.atualizadoEm ? toDate(p.atualizadoEm) : null;
+    const horas = sub
+      ? `<div class="hora">Submetido ${esc(fmtDH(sub))}</div>${alt && alt - sub > 1000 ? `<div class="hora">Alterado ${esc(fmtDH(alt))}</div>` : ""}`
+      : (alt ? `<div class="hora">Registado ${esc(fmtDH(alt))}</div>` : "");
+    return { p, nome: `${esc(nomeDe(p.uid) || "(apagado)")}${lista.length > 1 ? `(${i + 1})` : ""}`, horas };
+  }));
 }
 
 function adminJornadas() {
@@ -526,7 +611,7 @@ function editorJornada() {
     ${!prazoPassou ? `<p class="nota">Só podes publicar resultados depois do prazo fechar.</p>` : (!completos ? `<p class="nota">Para publicar, marca o resultado de todos os jogos (ou Anulado).</p>` : "")}
     <div><p class="eyebrow">Boletins recebidos (${boletins.length})</p>
       ${boletins.length ? `<div class="tabela-wrap"><table><thead><tr><th>Jogador</th>${ativos.map((g, i) => `<th class="c">${i + 1}</th>`).join("")}</tr></thead>
-        <tbody>${boletins.map(p => `<tr><td>${esc(nomeDe(p.uid) || "(apagado)")}</td>${ativos.map(g => `<td class="c"><span class="pk">${esc(p.escolhas?.[g.id] || "–")}</span></td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<p class="nota">Ainda ninguém registou boletim.</p>`}
+        <tbody>${linhasAdmin(boletins).map(({ p, nome, horas }) => `<tr><td>${nome}${horas}</td>${ativos.map(g => `<td class="c"><span class="pk">${esc(p.escolhas?.[g.id] || "–")}</span></td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<p class="nota">Ainda ninguém registou boletim.</p>`}
       ${semBoletim.length ? `<p class="nota" style="margin-top:8px">Sem boletim: ${semBoletim.map(u => esc(nomeDe(u))).join(", ")}</p>` : ""}
     </div>
     <div class="acoes" style="justify-content:flex-start">
@@ -614,19 +699,21 @@ async function publicarResultados() {
   const e = S.edit, d = dadosEdit();
   const validos = d.jogos.filter(g => ["1", "X", "2"].includes(d.resultados[g.id]));
   const snap = await getDocs(query(collection(db, "palpites"), where("jornada", "==", e.id)));
-  const escolhas = {}, acertos = {}, vencedores = [];
-  snap.forEach(s => {
-    const p = s.data();
-    escolhas[p.uid] = p.escolhas || {};
+  const porUid = {};
+  for (const p of snap.docs.map(s => ({ id: s.id, ...s.data() })).sort(porQuando)) (porUid[p.uid] ??= []).push(p);
+  // Cada boletim fica guardado com o número que tem na ordem de submissão dessa pessoa (Papi(1), Papi(2), ...).
+  const boletins = {}, vencedores = new Set(), vencedoresBoletins = [];
+  for (const [uid, lista] of Object.entries(porUid)) lista.forEach((p, i) => {
     const n = validos.filter(g => p.escolhas?.[g.id] === d.resultados[g.id]).length;
-    acertos[p.uid] = n;
-    if (validos.length && n === validos.length) vencedores.push(p.uid);
+    boletins[p.id] = { uid, n: i + 1, de: lista.length, escolhas: p.escolhas || {}, acertos: n };
+    if (validos.length && n === validos.length) { vencedores.add(uid); vencedoresBoletins.push(p.id); }
   });
   await setDoc(doc(db, "resultados", e.id), {
     numero: d.numero, jogos: d.jogos, resultados: d.resultados,
-    escolhas, acertos, validos: validos.length, vencedores, publicadoEm: serverTimestamp()
+    boletins, validos: validos.length, vencedores: [...vencedores], vencedoresBoletins, publicadoEm: serverTimestamp()
   });
-  toast(vencedores.length ? `Resultados publicados. ${vencedores.length === 1 ? "Há 1 vencedor" : `Há ${vencedores.length} vencedores`}!` : "Resultados publicados. Ninguém acertou em tudo.");
+  const nv = vencedores.size;
+  toast(nv ? `Resultados publicados. ${nv === 1 ? "Há 1 vencedor" : `Há ${nv} vencedores`}!` : "Resultados publicados. Ninguém acertou em tudo.");
 }
 
 async function correr(fn, ok) {
@@ -694,6 +781,7 @@ document.addEventListener("input", ev => {
 document.addEventListener("change", ev => {
   const t = ev.target;
   if (t.dataset.imp) { S.importDe = +t.value; render(true); return; }
+  if (t.dataset.regra && souAdmin()) { const v = +t.value; return correr(() => setDoc(doc(db, "config", "regras"), { maxBoletins: v }), `Agora cada pessoa pode fazer até ${v} ${v === 1 ? "boletim" : "boletins"} por jornada.`); }
   if (t.dataset.ed && S.edit) {
     if (t.dataset.g) { const g = S.edit.jogos.find(x => x.id === t.dataset.g); if (g) g[t.dataset.ed] = t.value; }
     else S.edit[t.dataset.ed] = t.value;
@@ -712,24 +800,56 @@ document.addEventListener("click", async ev => {
   const a = t.dataset.acao;
   if (a === "sair") return signOut(auth);
   if (a === "ser-admin") return correr(() => setDoc(doc(db, "config", "admin"), { uid: S.user.uid }), "Agora és o administrador. Vê o separador Admin.");
+  if (a === "cancelar-conf") { S.confirmar = null; return render(true); }
   if (a === "marcar") {
-    const r = S.rascunho[t.dataset.j] ??= {};
+    const r = S.rascunho[`${t.dataset.j}|${t.dataset.b}`] ??= {};
     r[t.dataset.g] = t.dataset.v;
+    return render(true);
+  }
+  if (a === "ver-bol") { S.sel[t.dataset.j] = t.dataset.b; S.confirmar = null; return render(true); }
+  if (a === "copiar-bol") {
+    const de = S.meus.find(p => p.id === t.dataset.de);
+    if (de) S.rascunho[`${t.dataset.j}|novo`] = { ...de.escolhas };
+    return render(true);
+  }
+  if (a === "cancelar-novo") { delete S.rascunho[`${t.dataset.j}|novo`]; delete S.sel[t.dataset.j]; return render(true); }
+  if (a === "apagar-bol") { S.confirmar = "apagar-bol:" + t.dataset.id; return render(true); }
+  if (a === "apagar-bol-sim") {
+    const id = t.dataset.id; S.confirmar = null;
+    try {
+      await deleteDoc(doc(db, "palpites", id));
+      delete S.rascunho[`${t.dataset.j}|${id}`]; delete S.sel[t.dataset.j];
+      toast("Boletim apagado.");
+    } catch (e) {
+      console.error(e);
+      toast(e?.code === "permission-denied" ? "Não deu para apagar: o prazo desta jornada já fechou." : "Não deu para apagar. Verifica a ligação e tenta outra vez.");
+    }
     return render(true);
   }
   if (a === "guardar") {
     const j = S.jornadas.find(x => x.id === t.dataset.j);
     if (!j) return;
+    const sel = t.dataset.b;
     const escolhas = {};
-    for (const g of jogosAtivos(j)) escolhas[g.id] = escolhaEfetiva(j, g.id);
+    for (const g of jogosAtivos(j)) escolhas[g.id] = escolhaEfetiva(j, sel, g.id);
+    const igual = igualA(j, sel);
+    if (igual) return toast(`Este boletim é igual ao boletim ${igual}. Muda pelo menos um jogo.`);
     S.aGuardar = true; render(true);
     try {
-      await setDoc(doc(db, "palpites", `${j.id}_${S.user.uid}`), { uid: S.user.uid, jornada: j.id, escolhas, atualizadoEm: serverTimestamp() });
-      delete S.rascunho[j.id];
+      if (sel === "novo") {
+        const n = slotLivre(j.id);
+        if (!n) throw { msg: `Já tens ${S.maxBol} boletins nesta jornada, que é o máximo.` };
+        const id = idBoletim(j.id, S.user.uid, n);
+        await setDoc(doc(db, "palpites", id), { uid: S.user.uid, jornada: j.id, n, escolhas, criadoEm: serverTimestamp(), atualizadoEm: serverTimestamp() });
+        S.sel[j.id] = id;
+      } else {
+        await updateDoc(doc(db, "palpites", sel), { escolhas, atualizadoEm: serverTimestamp() });
+      }
+      delete S.rascunho[`${j.id}|${sel}`];
       toast("Boletim registado. Boa sorte!");
     } catch (e) {
       console.error(e);
-      toast(e?.code === "permission-denied" ? "Não deu para registar: o prazo desta jornada já fechou." : "Não deu para registar. Verifica a ligação e tenta outra vez.");
+      toast(e?.msg || (e?.code === "permission-denied" ? "Não deu para registar: o prazo desta jornada já fechou." : "Não deu para registar. Verifica a ligação e tenta outra vez."));
     }
     S.aGuardar = false; return render(true);
   }
@@ -759,7 +879,7 @@ document.addEventListener("click", async ev => {
     S.edit = { id: jid(n), numero: n, abertura: toLocalInput(ab), prazo: toLocalInput(prazo), realense: "", jogos: [{ id: "g1", casa: "", fora: "", inicio: toLocalInput(ini) }], resultados: {}, erro: "" };
     return render(true);
   }
-  if (!S.edit && !["bloquear", "desbloquear", "apagar-u", "apagar-u-sim", "cancelar-conf"].includes(a)) return;
+  if (!S.edit && !["bloquear", "desbloquear", "apagar-u", "apagar-u-sim"].includes(a)) return;
   if (a === "res") { S.edit.resultados[t.dataset.g] = t.dataset.v; return render(true); }
   if (a === "mais-jogo") {
     const max = Math.max(0, ...S.edit.jogos.map(g => +g.id.slice(1)));
@@ -779,7 +899,6 @@ document.addEventListener("click", async ev => {
   if (a === "guardar-j") return correr(async () => { if (await guardarJornada()) toast("Jornada guardada."); });
   if (a === "publicar") return correr(publicarResultados);
   if (a === "apagar-j") { S.confirmar = "apagar-j:" + S.edit.id; return render(true); }
-  if (a === "cancelar-conf") { S.confirmar = null; return render(true); }
   if (a === "apagar-j-sim") {
     const id = S.edit.id; S.confirmar = null;
     return correr(async () => {

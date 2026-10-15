@@ -79,10 +79,55 @@ await l2.first().waitFor();
 for (let i = 0; i < await l2.count(); i++) await l2.nth(i).getByRole("button", { name: "1", exact: true }).click();
 await bruno.getByRole("button", { name: "Registar boletim" }).click();
 await bruno.getByRole("button", { name: "Registado" }).waitFor();
-passo("bruno registou");
+passo("bruno registou o boletim 1");
+// Segundo boletim: começa como cópia do 1, que não se pode registar igual
+await bruno.getByRole("button", { name: "+ Novo boletim" }).click();
+await bruno.getByRole("button", { name: "boletim 1", exact: true }).click();
+console.log("  cópia igual:", await bruno.locator(".barra-guardar .estado").innerText(), "| botão ativo:", await bruno.locator(".barra-guardar .btn").isEnabled());
+await l2.nth(1).getByRole("button", { name: "X", exact: true }).click();
+await bruno.getByRole("button", { name: "Registar boletim 2" }).click();
+await bruno.getByRole("button", { name: "Registado" }).waitFor();
+passo("bruno registou o boletim 2");
+// Terceiro boletim, depois apagado
+await bruno.getByRole("button", { name: "+ Novo boletim" }).click();
+for (let i = 0; i < await l2.count(); i++) await l2.nth(i).getByRole("button", { name: "2", exact: true }).click();
+await bruno.getByRole("button", { name: "Registar boletim 3" }).click();
+await bruno.getByRole("button", { name: "Registado" }).waitFor();
+console.log("  separadores com 3 boletins:", (await bruno.locator(".bols").innerText()).replace(/\n/g, " | "));
+await shot(bruno, "04b-bruno-tres-boletins", false);
+await bruno.getByRole("button", { name: "Apagar o boletim 3" }).click();
+await bruno.locator(".bol-pe .confirmar").getByRole("button", { name: "Apagar", exact: true }).click();
+await bruno.waitForTimeout(800);
+console.log("  depois de apagar:", (await bruno.locator(".bols").innerText()).replace(/\n/g, " | "));
+// Alterar o boletim 1 mais tarde, para aparecer a hora da alteração
+await bruno.waitForTimeout(1500);
+await bruno.getByRole("button", { name: "Boletim 1", exact: true }).click();
+await l2.nth(5).getByRole("button", { name: "X", exact: true }).click();
+await bruno.getByRole("button", { name: "Registar alterações" }).click();
+await bruno.getByRole("button", { name: "Registado" }).waitFor();
+passo("bruno alterou o boletim 1");
 const rui = await novo("rui"); await p_wait(rui);
 await criarConta(rui, "Rui", "rui@teste.pt");
-passo("rui criou conta sem registar");
+passo("rui criou conta");
+// Boletim no formato antigo (como os que já existiam antes de haver vários boletins)
+const H = { Authorization: "Bearer owner", "Content-Type": "application/json" };
+const BASE_FS = "http://127.0.0.1:8080/v1/projects/demo-totoreal/databases/(default)/documents";
+let ruiUid;
+for (let i = 0; i < 20 && !ruiUid; i++) {
+  const perfisFS = await (await fetch(`${BASE_FS}/perfis`, { headers: H })).json();
+  ruiUid = perfisFS.documents?.find(d => d.fields.nome.stringValue === "Rui")?.name.split("/").pop();
+  if (!ruiUid) await rui.waitForTimeout(250);
+}
+const sv = v => ({ stringValue: v });
+await fetch(`${BASE_FS}/palpites?documentId=J02_${ruiUid}`, { method: "POST", headers: H, body: JSON.stringify({ fields: {
+  uid: sv(ruiUid), jornada: sv("J02"), atualizadoEm: { timestampValue: new Date().toISOString() },
+  escolhas: { mapValue: { fields: { g1: sv("1"), g2: sv("X"), g3: sv("2"), g4: sv("1"), g5: sv("2"), g6: sv("2") } } } } }) });
+const l3 = rui.locator(".bol-linha");
+await rui.getByRole("button", { name: "Boletim 1", exact: true }).waitFor();
+await l3.nth(5).getByRole("button", { name: "1", exact: true }).click();
+await rui.getByRole("button", { name: "Registar alterações" }).click();
+await rui.getByRole("button", { name: "Registado" }).waitFor();
+passo("rui alterou um boletim antigo");
 // nome repetido
 const dup = await novo("dup"); await p_wait(dup);
 await dup.getByRole("button", { name: "Criar conta" }).click();
@@ -101,12 +146,14 @@ const reais = ["1", "X", "2", "1", "1", "A"]; // último anulado
 const eds = papi.locator(".ed-jogo");
 for (let i = 0; i < await eds.count(); i++) await eds.nth(i).getByRole("button", { name: reais[i] === "A" ? "Anulado" : reais[i], exact: true }).click();
 await shot(papi, "05-admin-resultados");
+console.log("  admin vê:", (await papi.locator(".editor table").innerText()).replace(/\n/g, " | "));
 await papi.getByRole("button", { name: "Publicar resultados" }).click();
 await papi.locator("#toast").waitFor({ state: "visible" });
 console.log("  toast:", await papi.locator("#toast").innerText());
 await papi.getByRole("tab", { name: "Resultados" }).click();
 await papi.getByRole("button", { name: "Ver o boletim de toda a gente" }).click();
 console.log("  resultados:", (await papi.locator(".vencedores").innerText()));
+console.log("  tabela:", (await papi.locator(".tabela-wrap table").innerText()).replace(/\n/g, " | "));
 await shot(papi, "06-resultados");
 await papi.getByRole("tab", { name: "Classificação" }).click();
 await shot(papi, "07-classificacao");
@@ -115,6 +162,10 @@ console.log("  classificação:", (await papi.locator("table").first().innerText
 // Bruno não pode alterar depois do prazo; vê os resultados
 await bruno.reload(); await bruno.getByRole("tab", { name: "Boletim" }).waitFor();
 console.log("  bruno boletim agora:", (await bruno.locator(".cab-jornada").innerText()).replace(/\n/g, " | "));
+await bruno.getByRole("tab", { name: "Resultados" }).click();
+console.log("  bruno vê:", await bruno.locator(".cartao .nota").nth(1).innerText());
+await shot(bruno, "08b-bruno-resultados", false);
+await bruno.getByRole("tab", { name: "Boletim" }).click();
 await shot(bruno, "08-bruno-boletim", false);
 
 // Bloquear o Rui

@@ -20,6 +20,16 @@ service cloud.firestore {
       let j = get(/databases/$(database)/documents/jornadas/$(jid)).data;
       return request.time >= j.abertura && request.time < j.prazo;
     }
+    // Quantos boletins cada pessoa pode fazer por jornada (o admin muda em config/regras; por omissão 3).
+    function maxBoletins() {
+      let r = /databases/$(database)/documents/config/regras;
+      return exists(r) ? get(r).data.maxBoletins : 3;
+    }
+    // O boletim 1 tem o id "J02_uid" e os seguintes "J02_uid_2", "J02_uid_3", ...
+    function idBoletim(jid, n) { return n == 1 ? jid + '_' + me() : jid + '_' + me() + '_' + string(n); }
+    function escolhasValidas() {
+      return request.resource.data.escolhas is map && request.resource.data.escolhas.size() <= 12;
+    }
 
     // O primeiro a reclamar fica administrador. Para mudar, apaga-se o documento na consola do Firebase.
     match /config/admin {
@@ -28,6 +38,15 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['uid'])
         && request.resource.data.uid == me();
       allow update, delete: if false;
+    }
+
+    match /config/regras {
+      allow read: if signedIn();
+      allow write: if isAdmin()
+        && request.resource.data.keys().hasOnly(['maxBoletins'])
+        && request.resource.data.maxBoletins is int
+        && request.resource.data.maxBoletins >= 1
+        && request.resource.data.maxBoletins <= 5;
     }
 
     match /perfis/{uid} {
@@ -78,17 +97,29 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Cada pessoa pode ter vários boletins por jornada; cada um guarda quando foi submetido e alterado.
     match /palpites/{pid} {
       allow read: if signedIn() && (resource.data.uid == me() || isAdmin());
-      allow create, update: if signedIn() && !bloqueado() && temPerfil()
-        && request.resource.data.keys().hasOnly(['uid', 'jornada', 'escolhas', 'atualizadoEm'])
+      allow create: if signedIn() && !bloqueado() && temPerfil()
+        && request.resource.data.keys().hasOnly(['uid', 'jornada', 'n', 'escolhas', 'criadoEm', 'atualizadoEm'])
         && request.resource.data.uid == me()
-        && pid == request.resource.data.jornada + '_' + me()
-        && request.resource.data.escolhas is map
-        && request.resource.data.escolhas.size() <= 12
+        && request.resource.data.n is int
+        && request.resource.data.n >= 1
+        && request.resource.data.n <= maxBoletins()
+        && pid == idBoletim(request.resource.data.jornada, request.resource.data.n)
+        && escolhasValidas()
+        && request.resource.data.criadoEm == request.time
         && request.resource.data.atualizadoEm == request.time
         && jornadaAberta(request.resource.data.jornada);
-      allow delete: if isAdmin();
+      // Ao alterar só mudam as escolhas e a hora da alteração; a hora de submissão fica.
+      allow update: if signedIn() && !bloqueado() && temPerfil()
+        && resource.data.uid == me()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['escolhas', 'atualizadoEm'])
+        && escolhasValidas()
+        && request.resource.data.atualizadoEm == request.time
+        && jornadaAberta(resource.data.jornada);
+      allow delete: if isAdmin()
+        || (signedIn() && !bloqueado() && resource.data.uid == me() && jornadaAberta(resource.data.jornada));
     }
   }
 }

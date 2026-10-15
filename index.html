@@ -84,6 +84,7 @@ h1, h2, h3 { text-wrap: balance; }
 
 main { padding-block: 18px 120px; }
 .pilha { display: grid; gap: 14px; }
+.pilha > *, .editor > * { min-width: 0; }
 
 .cartao { background: var(--papel); border-radius: 14px; box-shadow: var(--sombra); padding: 16px; min-width: 0; }
 .aviso { background: var(--papel); border: 1px dashed var(--linha); border-radius: 14px; padding: 26px 18px; text-align: center; color: var(--suave); }
@@ -156,6 +157,14 @@ form { display: grid; gap: 12px; }
 .bol-pe .estado { font-size: 14px; min-width: 0; }
 .bol-pe .estado.ok { color: var(--ok); font-weight: 600; }
 .extra { font-size: 13px; color: var(--suave); display: flex; gap: 6px 14px; flex-wrap: wrap; }
+.bols { display: flex; flex-wrap: wrap; gap: 6px; }
+.bol-tab { border: 1.5px solid var(--linha); background: var(--papel); color: var(--tinta); border-radius: 999px; padding: 7px 14px; font-weight: 600; font-size: 14px; }
+.bol-tab[aria-pressed="true"] { background: var(--marinho); border-color: var(--marinho); color: #fff; }
+@media (prefers-color-scheme: dark) { .bol-tab[aria-pressed="true"] { background: var(--azul); border-color: var(--azul); color: #071624; } }
+.bol-tab.novo { border-style: dashed; color: var(--azul); }
+.bol-pe .links { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; font-size: 14px; color: var(--suave); }
+.bol-pe .links .link { padding: 6px 0; }
+.hora { font-size: 12px; color: var(--suave); font-weight: 400; }
 
 .barra-guardar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;

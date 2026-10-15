@@ -1,5 +1,5 @@
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
-import { doc, setDoc, getDoc, getDocs, collection, query, where, writeBatch, serverTimestamp, Timestamp, deleteDoc } from "firebase/firestore";
+import { doc, setDoc, updateDoc, getDoc, getDocs, collection, query, where, writeBatch, serverTimestamp, Timestamp, deleteDoc } from "firebase/firestore";
 import fs from "fs";
 const env = await initializeTestEnvironment({ projectId: "demo-regras", firestore: { rules: fs.readFileSync("../firestore.rules", "utf8"), host: "127.0.0.1", port: 8080 } });
 await env.clearFirestore();
@@ -14,8 +14,13 @@ await env.withSecurityRulesDisabled(async c => {
   await setDoc(doc(d, "jornadas", "J02"), { numero: 2, abertura: Timestamp.fromMillis(agora - 3600e3), prazo: Timestamp.fromMillis(agora + 3600e3), jogos: [{ id: "g1" }], resultados: {} });
   await setDoc(doc(d, "jornadas", "J01"), { numero: 1, abertura: Timestamp.fromMillis(agora - 7200e3), prazo: Timestamp.fromMillis(agora - 60e3), jogos: [], resultados: {} });
   await setDoc(doc(d, "jornadas", "J03"), { numero: 3, abertura: Timestamp.fromMillis(agora + 3600e3), prazo: Timestamp.fromMillis(agora + 7200e3), jogos: [], resultados: {} });
+  // Boletim no formato antigo (sem número nem hora de submissão) e um boletim numa jornada já fechada.
+  await setDoc(doc(d, "palpites", "J02_papi"), { uid: "papi", jornada: "J02", escolhas: { g1: "2" }, atualizadoEm: Timestamp.fromMillis(agora - 600e3) });
+  await setDoc(doc(d, "palpites", "J01_a"), { uid: "a", jornada: "J01", n: 1, escolhas: { g1: "1" }, criadoEm: Timestamp.fromMillis(agora - 7000e3), atualizadoEm: Timestamp.fromMillis(agora - 7000e3) });
 });
-const pal = (db, uid, j, extra = {}) => setDoc(doc(db, "palpites", `${j}_${uid}`), { uid, jornada: j, escolhas: { g1: "1" }, atualizadoEm: serverTimestamp(), ...extra });
+const idB = (uid, j, n) => n === 1 ? `${j}_${uid}` : `${j}_${uid}_${n}`;
+const pal = (db, uid, j, n = 1, extra = {}) => setDoc(doc(db, "palpites", idB(uid, j, n)), { uid, jornada: j, n, escolhas: { g1: "1" }, criadoEm: serverTimestamp(), atualizadoEm: serverTimestamp(), ...extra });
+const alt = (db, id, campos) => updateDoc(doc(db, "palpites", id), { atualizadoEm: serverTimestamp(), ...campos });
 
 await t("sem sessão não lê jornadas", assertFails(getDoc(doc(anon, "jornadas", "J02"))));
 await t("A cria perfil", assertSucceeds(perfil(A, "a", "a@x.pt", "Zé Tó")));
@@ -31,12 +36,27 @@ await t("A não rouba admin", assertFails(setDoc(doc(A, "config", "admin"), { ui
 await t("A não escreve jornadas", assertFails(setDoc(doc(A, "jornadas", "J09"), { numero: 9 })));
 await t("admin escreve jornadas", assertSucceeds(setDoc(doc(P, "jornadas", "J09"), { numero: 9, abertura: Timestamp.fromMillis(agora), prazo: Timestamp.fromMillis(agora + 1), jogos: [], resultados: {} })));
 await t("A regista boletim na jornada aberta", assertSucceeds(pal(A, "a", "J02")));
-await t("A altera boletim na jornada aberta", assertSucceeds(pal(A, "a", "J02", { escolhas: { g1: "X" } })));
-await t("A não regista depois do prazo", assertFails(pal(A, "a", "J01")));
+await t("A altera boletim na jornada aberta", assertSucceeds(alt(A, "J02_a", { escolhas: { g1: "X" } })));
+await t("A não regista depois do prazo", assertFails(pal(A, "a", "J01", 2)));
+await t("A não altera depois do prazo", assertFails(alt(A, "J01_a", { escolhas: { g1: "2" } })));
+await t("A não apaga depois do prazo", assertFails(deleteDoc(doc(A, "palpites", "J01_a"))));
 await t("A não regista jornada futura", assertFails(pal(A, "a", "J03")));
 await t("A não regista em nome de B", assertFails(pal(A, "b", "J02")));
-await t("A não regista com id trocado", assertFails(setDoc(doc(A, "palpites", "J02_b"), { uid: "a", jornada: "J02", escolhas: {}, atualizadoEm: serverTimestamp() })));
-await t("A não mete campos extra", assertFails(pal(A, "a", "J02", { pontos: 99 })));
+await t("A não regista com id trocado", assertFails(setDoc(doc(A, "palpites", "J02_b"), { uid: "a", jornada: "J02", n: 1, escolhas: {}, criadoEm: serverTimestamp(), atualizadoEm: serverTimestamp() })));
+await t("A não mete campos extra", assertFails(pal(A, "a", "J02", 2, { pontos: 99 })));
+await t("A regista o boletim 2", assertSucceeds(pal(A, "a", "J02", 2, { escolhas: { g1: "2" } })));
+await t("A regista o boletim 3", assertSucceeds(pal(A, "a", "J02", 3, { escolhas: { g1: "X" } })));
+await t("A não regista um 4.º boletim (máximo 3)", assertFails(pal(A, "a", "J02", 4)));
+await t("A não regista com número que não bate com o id", assertFails(setDoc(doc(A, "palpites", "J02_a_2"), { uid: "a", jornada: "J02", n: 3, escolhas: {}, criadoEm: serverTimestamp(), atualizadoEm: serverTimestamp() })));
+await t("A não regista sem hora de submissão", assertFails(setDoc(doc(A, "palpites", "J02_a_4"), { uid: "a", jornada: "J02", n: 4, escolhas: {}, atualizadoEm: serverTimestamp() })));
+await t("A não inventa a hora de submissão", assertFails(setDoc(doc(A, "palpites", "J02_a_3"), { uid: "a", jornada: "J02", n: 3, escolhas: {}, criadoEm: Timestamp.fromMillis(agora - 86400e3), atualizadoEm: serverTimestamp() })));
+await t("A altera o boletim 2", assertSucceeds(alt(A, "J02_a_2", { escolhas: { g1: "1" } })));
+await t("A não muda a hora de submissão", assertFails(alt(A, "J02_a_2", { criadoEm: Timestamp.fromMillis(agora - 86400e3) })));
+await t("A não muda o número do boletim", assertFails(alt(A, "J02_a_2", { n: 1 })));
+await t("A não inventa a hora da alteração", assertFails(updateDoc(doc(A, "palpites", "J02_a_2"), { escolhas: { g1: "X" }, atualizadoEm: Timestamp.fromMillis(agora - 60e3) })));
+await t("A apaga o boletim 3 com a jornada aberta", assertSucceeds(deleteDoc(doc(A, "palpites", "J02_a_3"))));
+await t("B não apaga o boletim de A", assertFails(deleteDoc(doc(B, "palpites", "J02_a_2"))));
+await t("papi altera o boletim antigo (sem número)", assertSucceeds(alt(P, "J02_papi", { escolhas: { g1: "1" } })));
 await t("A lê o próprio boletim", assertSucceeds(getDoc(doc(A, "palpites", "J02_a"))));
 await t("B não lê o boletim de A", assertFails(getDoc(doc(B, "palpites", "J02_a"))));
 await t("B não lista todos os boletins", assertFails(getDocs(collection(B, "palpites"))));
@@ -44,6 +64,12 @@ await t("B lista os próprios boletins", assertSucceeds(getDocs(query(collection
 await t("admin lista todos os boletins", assertSucceeds(getDocs(query(collection(P, "palpites"), where("jornada", "==", "J02")))));
 await t("B não lê o email de A", assertFails(getDoc(doc(B, "privado", "a"))));
 await t("admin lê o email de A", assertSucceeds(getDoc(doc(P, "privado", "a"))));
+await t("A não muda o máximo de boletins", assertFails(setDoc(doc(A, "config", "regras"), { maxBoletins: 5 })));
+await t("admin não põe máximo de 9", assertFails(setDoc(doc(P, "config", "regras"), { maxBoletins: 9 })));
+await t("admin muda o máximo para 5", assertSucceeds(setDoc(doc(P, "config", "regras"), { maxBoletins: 5 })));
+await t("B lê o máximo de boletins", assertSucceeds(getDoc(doc(B, "config", "regras"))));
+await t("com máximo 5, A regista o boletim 4", assertSucceeds(pal(A, "a", "J02", 4, { escolhas: { g1: "X" } })));
+await t("A não regista o boletim 6", assertFails(pal(A, "a", "J02", 6)));
 await t("A não publica resultados", assertFails(setDoc(doc(A, "resultados", "J02"), { numero: 2 })));
 await t("admin publica resultados", assertSucceeds(setDoc(doc(P, "resultados", "J02"), { numero: 2 })));
 await t("B lê resultados", assertSucceeds(getDoc(doc(B, "resultados", "J02"))));

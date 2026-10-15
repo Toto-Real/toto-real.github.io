@@ -1,0 +1,94 @@
+rules_version = '2';
+
+// Regras de segurança do TotoReal.
+// - Qualquer pessoa com conta lê jornadas, resultados publicados e nomes dos jogadores.
+// - Cada um só lê e escreve o próprio boletim, e só enquanto a jornada está aberta.
+// - O administrador (config/admin) gere jornadas, resultados e jogadores, e lê tudo.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/config/admin)
+        && get(/databases/$(database)/documents/config/admin).data.uid == me();
+    }
+    function bloqueado() { return exists(/databases/$(database)/documents/bloqueados/$(me())); }
+    function temPerfil() { return exists(/databases/$(database)/documents/perfis/$(me())); }
+    function jornadaAberta(jid) {
+      let j = get(/databases/$(database)/documents/jornadas/$(jid)).data;
+      return request.time >= j.abertura && request.time < j.prazo;
+    }
+
+    // O primeiro a reclamar fica administrador. Para mudar, apaga-se o documento na consola do Firebase.
+    match /config/admin {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid'])
+        && request.resource.data.uid == me();
+      allow update, delete: if false;
+    }
+
+    match /perfis/{uid} {
+      allow read: if signedIn();
+      allow create: if signedIn() && uid == me() && !bloqueado()
+        && request.resource.data.keys().hasOnly(['nome', 'chave', 'criadoEm'])
+        && request.resource.data.nome is string
+        && request.resource.data.nome.size() >= 2
+        && request.resource.data.nome.size() <= 20
+        && request.resource.data.nome.matches('^[\\p{L}0-9]+([ ._-][\\p{L}0-9]+)*$')
+        && request.resource.data.chave == request.resource.data.nome.lower()
+        && request.resource.data.criadoEm == request.time
+        && getAfter(/databases/$(database)/documents/nomes/$(request.resource.data.chave)).data.uid == me();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // Garante que não há dois jogadores com o mesmo nome.
+    match /nomes/{chave} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid'])
+        && request.resource.data.uid == me()
+        && getAfter(/databases/$(database)/documents/perfis/$(me())).data.chave == chave;
+      allow delete: if isAdmin();
+    }
+
+    match /privado/{uid} {
+      allow read: if signedIn() && (uid == me() || isAdmin());
+      allow create, update: if signedIn() && uid == me()
+        && request.resource.data.keys().hasOnly(['email'])
+        && request.resource.data.email == request.auth.token.email;
+      allow delete: if isAdmin();
+    }
+
+    match /bloqueados/{uid} {
+      allow read: if signedIn() && (uid == me() || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /jornadas/{jid} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /resultados/{jid} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /palpites/{pid} {
+      allow read: if signedIn() && (resource.data.uid == me() || isAdmin());
+      allow create, update: if signedIn() && !bloqueado() && temPerfil()
+        && request.resource.data.keys().hasOnly(['uid', 'jornada', 'escolhas', 'atualizadoEm'])
+        && request.resource.data.uid == me()
+        && pid == request.resource.data.jornada + '_' + me()
+        && request.resource.data.escolhas is map
+        && request.resource.data.escolhas.size() <= 12
+        && request.resource.data.atualizadoEm == request.time
+        && jornadaAberta(request.resource.data.jornada);
+      allow delete: if isAdmin();
+    }
+  }
+}

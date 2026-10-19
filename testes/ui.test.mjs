@@ -206,6 +206,27 @@ await papi.waitForTimeout(1000);
 console.log("  bruno vê:", (await bruno.locator(".aviso h2").innerText()));
 console.log("  jogadores no admin:", await papi.locator(".jogador-adm .nm").allInnerTexts());
 
+// Jogo de outra série na Jornada 3, escrevendo o nome das equipas
+await papi.locator(".quem button", { hasText: "Admin" }).click();
+await papi.locator(".linha-j", { hasText: "J3" }).getByRole("button").click();
+const nJogosAntes = await papi.locator(".ed-jogo").count();
+await papi.getByRole("button", { name: "+ Adicionar jogo" }).click();
+const novoJ = papi.locator(".ed-jogo").last();
+await novoJ.getByLabel("Casa").fill("Vilaverdense FC B");
+await novoJ.getByLabel("Fora").fill("vilaverdense fc b");
+await papi.getByRole("button", { name: "Guardar jornada" }).click();
+console.log("  equipas iguais:", await papi.locator(".editor .erro-msg").innerText());
+await papi.locator(".ed-jogo").last().getByLabel("Fora").fill("  Ronfe  ");
+await papi.getByRole("button", { name: "Guardar jornada" }).click();
+await papi.locator("#toast", { hasText: "Jornada guardada." }).waitFor();
+await papi.waitForTimeout(800);
+console.log("  toast:", await papi.locator("#toast").innerText());
+await papi.locator(".ed-jogo").last().scrollIntoViewIfNeeded();
+await papi.locator(".ed-jogo").last().screenshot({ path: path.join(SHOTS, "13-jogo-outra-serie.png") });
+const j3 = await (await fetch(`${BASE_FS}/jornadas/J03`, { headers: H })).json();
+const jogosJ3 = j3.fields.jogos.arrayValue.values.map(v => `${v.mapValue.fields.casa.stringValue} – ${v.mapValue.fields.fora.stringValue}`);
+console.log(`  J3 tinha ${nJogosAntes} jogos, agora tem ${jogosJ3.length}; último: ${jogosJ3[jogosJ3.length - 1]}`);
+
 // Modo escuro
 const escuro = await novo("escuro", { colorScheme: "dark" }); await p_wait(escuro);
 await escuro.fill("#e-email", "papi@teste.pt"); await escuro.fill("#e-pass", "segredo1");

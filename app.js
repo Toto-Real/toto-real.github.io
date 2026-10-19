@@ -651,7 +651,9 @@ function adminJornadas() {
 
 function editorJornada() {
   const e = S.edit;
-  const opcoes = sel => [`<option value="">Escolher equipa</option>`, ...EQUIPAS.filter(t => t !== CLUBE).map(t => `<option ${t === sel ? "selected" : ""}>${esc(t)}</option>`)].join("");
+  // Escreve-se o nome da equipa; as da Série A aparecem como sugestão, mas pode ser qualquer equipa (por exemplo de outra série).
+  const equipa = (g, lado, rot) => `<div class="campo"><label for="ed-${lado[0]}-${g.id}">${rot}</label>
+    <input id="ed-${lado[0]}-${g.id}" data-ed="${lado}" data-g="${g.id}" list="lista-equipas" maxlength="40" autocomplete="off" placeholder="Nome da equipa" value="${esc(g[lado])}"></div>`;
   const boletins = S.todosPalpites.filter(p => p.jornada === e.id);
   const semBoletim = Object.keys(S.perfis).filter(u => !boletins.some(p => p.uid === u) && !S.bloqueados[u]);
   const prazoPassou = Date.now() >= new Date(e.prazo).getTime();
@@ -669,8 +671,8 @@ function editorJornada() {
     ${e.jogos.map((g, i) => `<div class="ed-jogo">
       <div class="topo-j"><b>Jogo ${i + 1}</b><button class="link perigo" data-acao="tirar-jogo" data-g="${g.id}">Remover</button></div>
       <div class="dois">
-        <div class="campo"><label for="ed-c-${g.id}">Casa</label><select id="ed-c-${g.id}" data-ed="casa" data-g="${g.id}">${opcoes(g.casa)}</select></div>
-        <div class="campo"><label for="ed-f-${g.id}">Fora</label><select id="ed-f-${g.id}" data-ed="fora" data-g="${g.id}">${opcoes(g.fora)}</select></div>
+        ${equipa(g, "casa", "Casa")}
+        ${equipa(g, "fora", "Fora")}
       </div>
       <div class="campo"><label for="ed-i-${g.id}">Dia e hora</label><input id="ed-i-${g.id}" type="datetime-local" data-ed="inicio" data-g="${g.id}" value="${esc(g.inicio)}"></div>
       <div class="campo"><label>Resultado</label><div class="seg" role="group" aria-label="Resultado do jogo ${i + 1}">
@@ -678,7 +680,9 @@ function editorJornada() {
           `<button data-acao="res" data-g="${g.id}" data-v="${v}" aria-pressed="${(e.resultados[g.id] || "") === v}">${r}</button>`).join("")}
       </div></div>
     </div>`).join("")}
+    <datalist id="lista-equipas">${EQUIPAS.filter(t => t !== CLUBE).map(t => `<option value="${esc(t)}"></option>`).join("")}</datalist>
     <button class="link" data-acao="mais-jogo">+ Adicionar jogo</button>
+    <p class="nota">Podes escrever o nome de qualquer equipa, também de outras séries. As da Série A aparecem como sugestão enquanto escreves.</p>
     ${e.erro ? `<div class="erro-msg" role="alert">${esc(e.erro)}</div>` : ""}
     <div class="acoes">
       <button class="btn sec" data-acao="guardar-j" ${S.ocupado ? "disabled" : ""}>Guardar jornada</button>
@@ -744,8 +748,9 @@ function validarEdit() {
   if (pr <= ab) return "O prazo tem de ser depois da abertura.";
   if (!e.jogos.length) return "A jornada precisa de pelo menos um jogo.";
   for (const [i, g] of e.jogos.entries()) {
-    if (!g.casa || !g.fora) return `Escolhe as duas equipas do jogo ${i + 1}.`;
-    if (g.casa === g.fora) return `No jogo ${i + 1} a equipa da casa e a de fora são iguais.`;
+    const casa = limparNome(g.casa), fora = limparNome(g.fora);
+    if (!casa || !fora) return `Escreve o nome das duas equipas do jogo ${i + 1}.`;
+    if (casa.toLowerCase() === fora.toLowerCase()) return `No jogo ${i + 1} a equipa da casa e a de fora são iguais.`;
     if (isNaN(new Date(g.inicio))) return `Preenche o dia e a hora do jogo ${i + 1}.`;
   }
   return "";
@@ -759,7 +764,7 @@ function dadosEdit() {
     abertura: Timestamp.fromDate(new Date(e.abertura)),
     prazo: Timestamp.fromDate(new Date(e.prazo)),
     realense: e.realense.trim(),
-    jogos: e.jogos.map(g => ({ id: g.id, casa: g.casa, fora: g.fora, inicio: Timestamp.fromDate(new Date(g.inicio)) })),
+    jogos: e.jogos.map(g => ({ id: g.id, casa: limparNome(g.casa), fora: limparNome(g.fora), inicio: Timestamp.fromDate(new Date(g.inicio)) })),
     resultados: Object.fromEntries(Object.entries(e.resultados).filter(([g, v]) => ids.has(g) && v))
   };
 }
@@ -768,6 +773,7 @@ async function guardarJornada() {
   const erro = validarEdit();
   S.edit.erro = erro;
   if (erro) { render(true); return false; }
+  for (const g of S.edit.jogos) { g.casa = limparNome(g.casa); g.fora = limparNome(g.fora); }
   await setDoc(doc(db, "jornadas", S.edit.id), dadosEdit());
   return true;
 }
